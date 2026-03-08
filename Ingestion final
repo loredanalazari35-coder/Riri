@@ -1,0 +1,228 @@
+import psycopg
+from psycopg import sql
+
+DB_HOST = "localhost"
+DB_PORT = 2005
+DB_USER = "postgres"
+DB_PASSWORD = "xxxx"
+DEFAULT_DATABASE = "postgres"
+WAREHOUSE_DATABASE = "DWH"
+INGESTION_SCHEMA = "ingestion"
+
+
+def open_connection(database_name):
+    return psycopg.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        dbname=database_name,
+        user=DB_USER,
+        password=DB_PASSWORD
+    )
+
+
+def check_postgres():
+    db = open_connection(DEFAULT_DATABASE)
+    cursor = db.cursor()
+
+    cursor.execute("SELECT current_database(), current_user, version();")
+    server_info = cursor.fetchone()
+    print(server_info)
+
+    cursor.close()
+    db.close()
+
+
+def ensure_database():
+    db = open_connection(DEFAULT_DATABASE)
+    db.autocommit = True
+
+    try:
+        cursor = db.cursor()
+        cursor.execute("SELECT 1 FROM pg_database WHERE datname = %s;", (WAREHOUSE_DATABASE,))
+        existing_db = cursor.fetchone()
+
+        if existing_db:
+            print(f"Database '{WAREHOUSE_DATABASE}' already exists.")
+        else:
+            cursor.execute(f'CREATE DATABASE "{WAREHOUSE_DATABASE}";')
+            print(f"Database '{WAREHOUSE_DATABASE}' created successfully")
+
+        cursor.close()
+    finally:
+        db.close()
+
+
+def ensure_schema():
+    db = open_connection(WAREHOUSE_DATABASE)
+    db.autocommit = True
+
+    try:
+        with db.cursor() as cur:
+            cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{INGESTION_SCHEMA}";')
+            print(f"Schema '{INGESTION_SCHEMA}' created successfully")
+    finally:
+        db.close()
+
+
+def ensure_tables():
+    db = open_connection(WAREHOUSE_DATABASE)
+
+    table_statements = [
+        """
+        CREATE TABLE IF NOT EXISTS ingestion.crm_cust_info (
+            cst_id INT,
+            cst_key VARCHAR(50),
+            cst_firstname VARCHAR(50),
+            cst_lastname VARCHAR(50),
+            cst_marital_status VARCHAR(50),
+            cst_gndr VARCHAR(50),
+            cst_create_date DATE
+        );
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS ingestion.crm_prd_info (
+            prd_id INT,
+            prd_key VARCHAR(50),
+            prd_nm VARCHAR(255),
+            prd_cost NUMERIC(12, 2),
+            prd_line VARCHAR(50),
+            prd_start_dt DATE,
+            prd_end_dt DATE
+        );
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS ingestion.crm_sales_details (
+            sls_ord_num VARCHAR(50),
+            sls_prd_key VARCHAR(50),
+            sls_cust_id INT,
+            sls_order_dt VARCHAR(50),
+            sls_ship_dt VARCHAR(50),
+            sls_due_dt VARCHAR(50),
+            sls_sales NUMERIC(12, 2),
+            sls_quantity INT,
+            sls_price NUMERIC(12, 2)
+        );
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS ingestion.erp_cust_az12 (
+            cid VARCHAR(50),
+            bdate VARCHAR(50),
+            gen VARCHAR(20)
+        );
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS ingestion.erp_loc_a101 (
+            cid VARCHAR(50),
+            cntry VARCHAR(100)
+        );
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS ingestion.erp_px_cat_g1v2 (
+            id VARCHAR(50),
+            cat VARCHAR(100),
+            subcat VARCHAR(100),
+            maintenance VARCHAR(100)
+        );
+        """
+    ]
+
+    try:
+        with db.cursor() as cur:
+            cur.execute(
+                sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(INGESTION_SCHEMA))
+            )
+            cur.execute(
+                sql.SQL("SET search_path TO {}").format(sql.Identifier(INGESTION_SCHEMA))
+            )
+
+            for statement in table_statements:
+                cur.execute(statement)
+
+        db.commit()
+        print(f"All 6 tables created successfully in schema '{INGESTION_SCHEMA}'")
+
+    except Exception as e:
+        db.rollback()
+        print("Error while creating tables:")
+        print(e)
+
+    finally:
+        db.close()
+
+
+def copy_into_table(cur, table_name, csv_path):
+    copy_command = f"""
+        COPY {table_name}
+        FROM STDIN
+        WITH (FORMAT csv, HEADER true)
+    """
+
+    with cur.copy(copy_command) as copy_manager:
+        with open(csv_path, "r", encoding="utf-8") as file:
+            for record in file:
+                copy_manager.write(record)
+
+
+def upload_files():
+    db = open_connection(WAREHOUSE_DATABASE)
+
+    datasets = {
+        "crm_cust_info": "/Users/loredanalazari/Desktop/datasets/source_crm/cust_info.csv",
+        "crm_prd_info": "/Users/loredanalazari/Desktop/datasets/source_crm/prd_info.csv",
+        "crm_sales_details": "/Users/loredanalazari/Desktop/datasets/source_crm/sales_details.csv",
+        "erp_cust_az12": "/Users/loredanalazari/Desktop/datasets/source_erp/CUST_AZ12.csv",
+        "erp_loc_a101": "/Users/loredanalazari/Desktop/datasets/source_erp/LOC_A101.csv",
+        "erp_px_cat_g1v2": "/Users/loredanalazari/Desktop/datasets/source_erp/PX_CAT_G1V2.csv"
+    }
+
+    try:
+        with db.cursor() as cur:
+            cur.execute(f'SET search_path TO "{INGESTION_SCHEMA}"')
+
+            for table_name, path in datasets.items():
+                copy_into_table(cur, table_name, path)
+                print(f"{table_name} loaded")
+
+        db.commit()
+        print("All tables loaded successfully")
+
+    except Exception as e:
+        db.rollback()
+        print("Error occurred:")
+        print(e)
+
+    finally:
+        db.close()
+
+
+def check_loaded_data():
+    db = open_connection(WAREHOUSE_DATABASE)
+
+    try:
+        with db.cursor() as cur:
+            cur.execute(f'SET search_path TO "{INGESTION_SCHEMA}"')
+
+            print("\nValidation summary:")
+            for table_name in [
+                "crm_cust_info",
+                "crm_prd_info",
+                "crm_sales_details",
+                "erp_cust_az12",
+                "erp_loc_a101",
+                "erp_px_cat_g1v2"
+            ]:
+                cur.execute(f"SELECT COUNT(*) FROM {table_name};")
+                total = cur.fetchone()[0]
+                print(f"Table {table_name} contains {total} rows")
+
+    finally:
+        db.close()
+
+
+if __name__ == "__main__":
+    check_postgres()
+    ensure_database() 
+    ensure_schema()
+    ensure_tables()
+    upload_files()
+    check_loaded_data()
