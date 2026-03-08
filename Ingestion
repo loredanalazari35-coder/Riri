@@ -1,0 +1,215 @@
+import psycopg
+from psycopg import sql
+
+DB_HOST = "localhost"
+DB_PORT = 2005
+DB_USER = "postgres"
+DB_PASSWORD = "xxxx"
+DEFAULT_DB = "postgres"
+TARGET_DB = "DWH"
+TARGET_SCHEMA = "ingestion"
+
+
+def get_connection(db_name):
+    return psycopg.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        dbname=db_name,
+        user=DB_USER,
+        password=DB_PASSWORD
+    )
+
+
+def check_server():
+    conn = get_connection(DEFAULT_DB)
+    cur = conn.cursor()
+
+    cur.execute("SELECT current_database(), current_user, version();")
+    result = cur.fetchone()
+    print(result)
+
+    cur.close()
+    conn.close()
+
+
+def build_database():
+    conn = get_connection(DEFAULT_DB)
+    conn.autocommit = True
+
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM pg_database WHERE datname = %s;", (TARGET_DB,))
+        exists = cur.fetchone() is not None
+
+        if exists:
+            print(f"Database '{TARGET_DB}' already exists.")
+        else:
+            cur.execute(f'CREATE DATABASE "{TARGET_DB}";')
+            print(f"Database '{TARGET_DB}' created successfully")
+
+        cur.close()
+    finally:
+        conn.close()
+
+
+def build_schema():
+    conn = get_connection(TARGET_DB)
+    conn.autocommit = True
+
+    try:
+        cur = conn.cursor()
+        cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{TARGET_SCHEMA}";')
+        print(f"Schema '{TARGET_SCHEMA}' created successfully")
+        cur.close()
+    finally:
+        conn.close()
+
+
+def build_tables():
+    conn = get_connection(TARGET_DB)
+
+    crm_cust_info_sql = """
+        CREATE TABLE IF NOT EXISTS ingestion.crm_cust_info (
+            cst_id INT,
+            cst_key VARCHAR(50),
+            cst_firstname VARCHAR(50),
+            cst_lastname VARCHAR(50),
+            cst_marital_status VARCHAR(50),
+            cst_gndr VARCHAR(50),
+            cst_create_date DATE
+        );
+    """
+
+    crm_prd_info_sql = """
+        CREATE TABLE IF NOT EXISTS ingestion.crm_prd_info (
+            prd_id INT,
+            prd_key VARCHAR(50),
+            prd_nm VARCHAR(255),
+            prd_cost NUMERIC(12, 2),
+            prd_line VARCHAR(50),
+            prd_start_dt DATE,
+            prd_end_dt DATE
+        );
+    """
+
+    crm_sales_details_sql = """
+        CREATE TABLE IF NOT EXISTS ingestion.crm_sales_details (
+            sls_ord_num VARCHAR(50),
+            sls_prd_key VARCHAR(50),
+            sls_cust_id INT,
+            sls_order_dt VARCHAR(50),
+            sls_ship_dt VARCHAR(50),
+            sls_due_dt VARCHAR(50),
+            sls_sales NUMERIC(12, 2),
+            sls_quantity INT,
+            sls_price NUMERIC(12, 2)
+        );
+    """
+
+    erp_cust_sql = """
+        CREATE TABLE IF NOT EXISTS ingestion.erp_cust_az12 (
+            cid VARCHAR(50),
+            bdate VARCHAR(50),
+            gen VARCHAR(20)
+        );
+    """
+
+    erp_loc_sql = """
+        CREATE TABLE IF NOT EXISTS ingestion.erp_loc_a101 (
+            cid VARCHAR(50),
+            cntry VARCHAR(100)
+        );
+    """
+
+    erp_cat_sql = """
+        CREATE TABLE IF NOT EXISTS ingestion.erp_px_cat_g1v2 (
+            id VARCHAR(50),
+            cat VARCHAR(100),
+            subcat VARCHAR(100),
+            maintenance VARCHAR(100)
+        );
+    """
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(TARGET_SCHEMA))
+            )
+            cur.execute(
+                sql.SQL("SET search_path TO {}").format(sql.Identifier(TARGET_SCHEMA))
+            )
+
+            cur.execute(crm_cust_info_sql)
+            cur.execute(crm_prd_info_sql)
+            cur.execute(crm_sales_details_sql)
+            cur.execute(erp_cust_sql)
+            cur.execute(erp_loc_sql)
+            cur.execute(erp_cat_sql)
+
+        conn.commit()
+        print(f"All 6 tables created successfully in schema '{TARGET_SCHEMA}' inside database '{TARGET_DB}'")
+
+    except Exception as e:
+        conn.rollback()
+        print("Error while creating tables:")
+        print(e)
+
+    finally:
+        conn.close()
+
+
+def copy_csv(cursor, table_name, path):
+    sql_copy = f"""
+        COPY {table_name}
+        FROM STDIN
+        WITH (FORMAT csv, HEADER true)
+    """
+    with cursor.copy(sql_copy) as copier:
+        with open(path, "r", encoding="utf-8") as source_file:
+            for line in source_file:
+                copier.write(line)
+
+
+def insert_data():
+    conn = get_connection(TARGET_DB)
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f'SET search_path TO "{TARGET_SCHEMA}"')
+
+            copy_csv(cur, "crm_cust_info", "/Users/loredanalazari/Desktop/datasets/source_crm/cust_info.csv")
+            print("crm_cust_info loaded")
+
+            copy_csv(cur, "crm_prd_info", "/Users/loredanalazari/Desktop/datasets/source_crm/prd_info.csv")
+            print("crm_prd_info loaded")
+
+            copy_csv(cur, "crm_sales_details", "/Users/loredanalazari/Desktop/datasets/source_crm/sales_details.csv")
+            print("crm_sales_details loaded")
+
+            copy_csv(cur, "erp_cust_az12", "/Users/loredanalazari/Desktop/datasets/source_erp/CUST_AZ12.csv")
+            print("erp_cust_az12 loaded")
+
+            copy_csv(cur, "erp_loc_a101", "/Users/loredanalazari/Desktop/datasets/source_erp/LOC_A101.csv")
+            print("erp_loc_a101 loaded")
+
+            copy_csv(cur, "erp_px_cat_g1v2", "/Users/loredanalazari/Desktop/datasets/source_erp/PX_CAT_G1V2.csv")
+            print("erp_px_cat_g1v2 loaded")
+
+        conn.commit()
+        print("All tables loaded successfully")
+
+    except Exception as e:
+        conn.rollback()
+        print("Error occurred:")
+        print(e)
+
+    finally:
+        conn.close()
+
+
+if __name__ == "__main__":
+    check_server()
+    build_database()
+    build_schema()
+    build_tables()
+    insert_data()
