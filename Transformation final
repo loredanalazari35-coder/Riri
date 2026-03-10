@@ -1,0 +1,43 @@
+import psycopg
+import pandas as pd
+
+DB_HOST = "localhost"
+DB_PORT = 5432
+DB_USER = "postgres"
+DB_PASSWORD = "xxxx"
+TARGET_DB = "DWH"
+SOURCE_SCHEMA = "ingestion"
+
+
+def get_connection(db_name):
+    return psycopg.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        dbname=db_name,
+        user=DB_USER,
+        password=DB_PASSWORD
+    )
+
+
+def transform_crm_customer():
+    conn = get_connection(TARGET_DB)
+
+    try:
+        query = f"SELECT * FROM {SOURCE_SCHEMA}.crm_cust_info"
+        df = pd.read_sql_query(sql=query, con=conn)
+
+        df = df.dropna(subset=["cst_id"])
+        df = df.drop_duplicates(subset=["cst_id"], keep="last")
+
+        print(df)
+
+    except Exception as e:
+        print("Error during transformation:")
+        print(e)
+
+    finally:
+        conn.close()
+
+
+if __name__ == "__main__":
+    transform_crm_customer()
