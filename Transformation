@@ -1,0 +1,183 @@
+import psycopg
+import pandas as pd
+
+DB_HOST = "localhost"
+DB_PORT = 5432
+DB_USER = "postgres"
+DB_PASSWORD = "xxxx"
+TARGET_DB = "DWH"
+SOURCE_SCHEMA = "ingestion"
+TARGET_SCHEMA = "transformation"
+
+
+def get_connection(db_name):
+    return psycopg.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        dbname=db_name,
+        user=DB_USER,
+        password=DB_PASSWORD
+    )
+
+
+def load_ingestion_table(query):
+    conn = get_connection(TARGET_DB)
+
+    try:
+        df = pd.read_sql_query(sql=query, con=conn)
+        return df
+    finally:
+        conn.close()
+
+
+def clean_crm_customer(df):
+    df = df.dropna(subset=["cst_id"])
+    df = df.drop_duplicates(subset=["cst_id"], keep="last")
+
+    df = df.rename(columns={
+        "cst_id": "id",
+        "cst_key": "customer_key",
+        "cst_firstname": "first_name",
+        "cst_lastname": "last_name",
+        "cst_marital_status": "marital_status",
+        "cst_gndr": "gender",
+        "cst_create_date": "date_of_creation"
+    })
+
+    return df
+
+
+def clean_crm_product(df):
+    df = df.dropna(subset=["prd_id"])
+    df = df.drop_duplicates(subset=["prd_id"], keep="last")
+
+    df = df.rename(columns={
+        "prd_id": "id",
+        "prd_key": "product_key",
+        "prd_nm": "product_name",
+        "prd_cost": "product_cost",
+        "prd_line": "product_line",
+        "prd_start_dt": "product_start_date",
+        "prd_end_dt": "product_end_date"
+    })
+
+    return df
+
+
+def clean_crm_sales(df):
+    df = df.drop_duplicates(keep="last")
+
+    df = df.rename(columns={
+        "sls_ord_num": "id",
+        "sls_prd_key": "product_key",
+        "sls_cust_id": "customer_id",
+        "sls_order_dt": "order_date",
+        "sls_ship_dt": "shipping_date",
+        "sls_due_dt": "due_date",
+        "sls_sales": "sale_amount",
+        "sls_quantity": "quantity",
+        "sls_price": "price"
+    })
+
+    return df
+
+
+def clean_erp_customer(df):
+    df = df.dropna(subset=["cid"])
+    df = df.drop_duplicates(subset=["cid"], keep="last")
+
+    df = df.rename(columns={
+        "cid": "id",
+        "bdate": "date_of_birth",
+        "gen": "gender"
+    })
+
+    return df
+
+
+def clean_erp_location(df):
+    df = df.dropna(subset=["cid"])
+    df = df.drop_duplicates(subset=["cid"], keep="last")
+
+    df = df.rename(columns={
+        "cid": "id",
+        "cntry": "country"
+    })
+
+    return df
+
+
+def clean_erp_product_category(df):
+    df = df.dropna(subset=["id"])
+    df = df.drop_duplicates(subset=["id"], keep="last")
+
+    df = df.rename(columns={
+        "id": "id",
+        "cat": "category",
+        "subcat": "subcategory",
+        "maintenance": "requires_maintenance"
+    })
+
+    return df
+
+
+def insert_dataframe(conn, df, table_name):
+    with conn.cursor() as cur:
+        cur.execute(f'TRUNCATE TABLE {TARGET_SCHEMA}.{table_name};')
+
+        for row in df.itertuples(index=False, name=None):
+            placeholders = ", ".join(["%s"] * len(row))
+            insert_sql = f'INSERT INTO {TARGET_SCHEMA}.{table_name} VALUES ({placeholders})'
+            cur.execute(insert_sql, row)
+
+
+def transform_data():
+    crm_customer_df = load_ingestion_table(f"SELECT * FROM {SOURCE_SCHEMA}.crm_cust_info")
+    crm_product_df = load_ingestion_table(f"SELECT * FROM {SOURCE_SCHEMA}.crm_prd_info")
+    crm_sales_df = load_ingestion_table(f"SELECT * FROM {SOURCE_SCHEMA}.crm_sales_details")
+    erp_customer_df = load_ingestion_table(f"SELECT * FROM {SOURCE_SCHEMA}.erp_cust_az12")
+    erp_location_df = load_ingestion_table(f"SELECT * FROM {SOURCE_SCHEMA}.erp_loc_a101")
+    erp_category_df = load_ingestion_table(f"SELECT * FROM {SOURCE_SCHEMA}.erp_px_cat_g1v2")
+
+    crm_customer_df = clean_crm_customer(crm_customer_df)
+    crm_product_df = clean_crm_product(crm_product_df)
+    crm_sales_df = clean_crm_sales(crm_sales_df)
+    erp_customer_df = clean_erp_customer(erp_customer_df)
+    erp_location_df = clean_erp_location(erp_location_df)
+    erp_category_df = clean_erp_product_category(erp_category_df)
+
+    conn = get_connection(TARGET_DB)
+
+    try:
+        insert_dataframe(conn, crm_customer_df, "crm_customer")
+        print("crm_customer transformed and loaded")
+
+        insert_dataframe(conn, crm_product_df, "crm_product")
+        print("crm_product transformed and loaded")
+
+        insert_dataframe(conn, crm_sales_df, "crm_sales")
+        print("crm_sales transformed and loaded")
+
+        insert_dataframe(conn, erp_customer_df, "erp_customer")
+        print("erp_customer transformed and loaded")
+
+        insert_dataframe(conn, erp_location_df, "erp_location")
+        print("erp_location transformed and loaded")
+
+        insert_dataframe(conn, erp_category_df, "erp_product_category")
+        print("erp_product_category transformed and loaded")
+
+        conn.commit()
+        print("All transformation tables loaded successfully")
+
+    except Exception as e:
+        conn.rollback()
+        print("Error during transformation:")
+        print(e)
+
+    finally:
+        conn.close()
+
+
+if __name__ == "__main__":
+    transform_data()
