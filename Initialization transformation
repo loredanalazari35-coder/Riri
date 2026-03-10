@@ -1,0 +1,130 @@
+import psycopg
+from psycopg import sql
+
+DB_HOST = "localhost"
+DB_PORT = 5432
+DB_USER = "postgres"
+DB_PASSWORD = "xxxx"
+TARGET_DB = "DWH"
+TARGET_SCHEMA = "transformation"
+
+
+def get_connection(db_name):
+    return psycopg.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        dbname=db_name,
+        user=DB_USER,
+        password=DB_PASSWORD
+    )
+
+
+def build_schema():
+    conn = get_connection(TARGET_DB)
+    conn.autocommit = True
+
+    try:
+        cur = conn.cursor()
+        cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{TARGET_SCHEMA}";')
+        print(f"Schema '{TARGET_SCHEMA}' created successfully")
+        cur.close()
+    finally:
+        conn.close()
+
+
+def build_tables():
+    conn = get_connection(TARGET_DB)
+
+    erp_customer_sql = """
+        CREATE TABLE IF NOT EXISTS transformation.erp_customer (
+            id VARCHAR(50),
+            date_of_birth VARCHAR(20),
+            gender VARCHAR(10)
+        );
+    """
+
+    erp_location_sql = """
+        CREATE TABLE IF NOT EXISTS transformation.erp_location (
+            id VARCHAR(50),
+            country VARCHAR(50)
+        );
+    """
+
+    erp_product_category_sql = """
+        CREATE TABLE IF NOT EXISTS transformation.erp_product_category (
+            id VARCHAR(10),
+            category VARCHAR(50),
+            subcategory VARCHAR(75),
+            requires_maintenance VARCHAR(50)
+        );
+    """
+
+    crm_customer_sql = """
+        CREATE TABLE IF NOT EXISTS transformation.crm_customer (
+            id VARCHAR(10),
+            customer_key VARCHAR(50),
+            first_name VARCHAR(50),
+            last_name VARCHAR(50),
+            marital_status VARCHAR(5),
+            gender VARCHAR(5),
+            date_of_creation VARCHAR(50)
+        );
+    """
+
+    crm_product_sql = """
+        CREATE TABLE IF NOT EXISTS transformation.crm_product (
+            id VARCHAR(5),
+            product_key VARCHAR(50),
+            product_name VARCHAR(100),
+            product_cost VARCHAR(20),
+            product_line VARCHAR(5),
+            product_start_date VARCHAR(20),
+            product_end_date VARCHAR(20)
+        );
+    """
+
+    crm_sales_sql = """
+        CREATE TABLE IF NOT EXISTS transformation.crm_sales (
+            id VARCHAR(50),
+            product_key VARCHAR(50),
+            customer_id VARCHAR(50),
+            order_date VARCHAR(50),
+            shipping_date VARCHAR(50),
+            due_date VARCHAR(50),
+            sale_amount VARCHAR(50),
+            quantity VARCHAR(50),
+            price VARCHAR(20)
+        );
+    """
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(TARGET_SCHEMA))
+            )
+            cur.execute(
+                sql.SQL("SET search_path TO {}").format(sql.Identifier(TARGET_SCHEMA))
+            )
+
+            cur.execute(erp_customer_sql)
+            cur.execute(erp_location_sql)
+            cur.execute(erp_product_category_sql)
+            cur.execute(crm_customer_sql)
+            cur.execute(crm_product_sql)
+            cur.execute(crm_sales_sql)
+
+        conn.commit()
+        print(f"All transformation tables created successfully in schema '{TARGET_SCHEMA}'")
+
+    except Exception as e:
+        conn.rollback()
+        print("Error while creating transformation tables:")
+        print(e)
+
+    finally:
+        conn.close()
+
+
+if __name__ == "__main__":
+    build_schema()
+    build_tables()
